@@ -43,6 +43,8 @@ void idleCB();
 void keyboardCB(unsigned char key, int x, int y);
 void mouseCB(int button, int stat, int x, int y);
 void mouseMotionCB(int x, int y);
+void *updateCB(void*);
+void initPBOArray();
 
 // CALLBACK function when exit() called ///////////////////////////////////////
 void exitCB();
@@ -91,7 +93,9 @@ int pboMode;
 int drawMode = 0;
 Timer timer, t1, t2;
 float copyTime, updateTime;
-
+pthread_t updateThread;
+pthread_cond_t updateCond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t updateMutex = PTHREAD_MUTEX_INITIALIZER;
 
 // function pointers for PBO Extension
 // Windows needs to get function pointers from ICD OpenGL drivers,
@@ -162,7 +166,7 @@ int main(int argc, char **argv)
            glMapBufferARB && glUnmapBufferARB && glDeleteBuffersARB && glGetBufferParameterivARB)
         {
             pboSupported = true;
-            pboMode = 1;    // using 1 PBO
+            pboMode = 2;    // using 2 PBOs
             cout << "Video card supports GL_ARB_pixel_buffer_object." << endl;
         }
         else
@@ -177,7 +181,7 @@ int main(int argc, char **argv)
     if(glInfo.isExtensionSupported("GL_ARB_pixel_buffer_object"))
     {
         pboSupported = true;
-        pboMode = 1;
+        pboMode = 2;
         cout << "Video card supports GL_ARB_pixel_buffer_object." << endl;
     }
     else
@@ -198,6 +202,7 @@ int main(int argc, char **argv)
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboIds[1]);
         glBufferDataARB(GL_PIXEL_UNPACK_BUFFER_ARB, DATA_SIZE, 0, GL_STREAM_DRAW_ARB);
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+        initPBOArray();
     }
 
     // start timer, the elapsed time will be used for updateVertices()
@@ -619,11 +624,124 @@ void toPerspective()
 //=============================================================================
 // CALLBACKS
 //=============================================================================
+struct pboBuf
+{
+    GLuint pboId;
+    GLubyte* ptr;
+    int isMapped;
+};
+
+struct pboBuf* pboNext;
+struct pboBuf* pboCur;
+struct pboBuf pboArray[2];
+int pboIndex = 0;
+
+void initPBOArray()
+{
+    pboArray[0].pboId = pboIds[0];
+    pboArray[1].pboId = pboIds[1];
+}
+
+void *updateCB(void *cb)
+{
+    while(true)
+    {
+        GLubyte* ptr = NULL;
+        pthread_mutex_lock(&updateMutex);
+        //cout << "wait" << endl;
+        pthread_cond_wait(&updateCond, &updateMutex);
+        //cout << "woke" << endl;
+        if (pboCur->isMapped)
+        {
+            ptr = pboCur->ptr;
+        }
+        pthread_mutex_unlock(&updateMutex);
+        if (ptr)
+        {
+            //cout << "update" << endl;
+            updatePixels(pboCur->ptr, DATA_SIZE);
+        }
+
+        pthread_mutex_lock(&updateMutex);
+        pboIndex++;
+        pboIndex = pboIndex % 2;
+        //cout << "new idx: " << pboIndex << endl;
+        pboNext = &pboArray[pboIndex];
+        pthread_mutex_unlock(&updateMutex);
+    }
+    return NULL;
+}
+
+void swapBuf()
+{
+    GLuint pboId;
+    pthread_mutex_lock(&updateMutex);
+    if (pboNext)
+    {
+        //cout << "next swap" << endl;
+        if (pboCur->isMapped)
+        {
+            glUnmapBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB); // release pointer to mapping buffer
+        }
+        pboCur = pboNext;
+        pboId = pboCur->pboId;
+        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboId);
+        pboCur->ptr = (GLubyte*)glMapBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, GL_WRITE_ONLY_ARB);
+        pboCur->isMapped = 1;
+        pthread_cond_signal(&updateCond);
+    }
+    else if (pboCur == NULL)
+    {
+        //cout << "1st swap" << endl;
+        pboCur = &pboArray[pboIndex];
+        pboId = pboCur->pboId;
+        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboId);
+        pboCur->ptr = (GLubyte*)glMapBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, GL_WRITE_ONLY_ARB);
+        if (pboCur->ptr) {
+            updatePixels(pboCur->ptr, DATA_SIZE);
+            glUnmapBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB); // release pointer to mapping buffer
+            pboCur->isMapped = 0;
+            pthread_cond_signal(&updateCond);
+        } else {
+            cout << "Could not map buffer " << __LINE__ << endl;
+        }
+    }
+    else
+    {
+        //cout << "re-render" << endl;
+        // re-render pboCur
+        pboId = pboCur->pboId;
+        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboId);
+        pthread_cond_signal(&updateCond);
+    }
+    pthread_mutex_unlock(&updateMutex);
+}
 
 void displayCB()
 {
     static int index = 0;
     int nextIndex = 0;                  // pbo index used for next frame
+    static int firstTime = 1;
+
+    if (firstTime)
+    {
+        int err = pthread_cond_init(&updateCond, NULL);
+        if (err != 0)
+        {
+            cout << "Cond creation failed" << endl;
+        }
+        err = pthread_mutex_init(&updateMutex, NULL);
+        if (err != 0)
+        {
+            cout << "Cond creation failed" << endl;
+        }
+        err = pthread_create(&updateThread, NULL, updateCB, NULL);
+        if (err != 0)
+        {
+            cout << "Thread creation failed" << endl;
+        }
+        firstTime = 0;
+    }
 
     if(pboMode > 0)
     {
@@ -646,12 +764,12 @@ void displayCB()
 
         // bind the texture and PBO
         glBindTexture(GL_TEXTURE_2D, textureId);
-        glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pboIds[index]);
+        swapBuf();  // will bind the PBO
 
         // copy pixels from PBO to texture object
         // Use offset instead of ponter.
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, IMAGE_WIDTH, IMAGE_HEIGHT, PIXEL_FORMAT, GL_UNSIGNED_BYTE, 0);
-
+#if 0
         // measure the time copying data from PBO to texture object
         t1.stop();
         copyTime = t1.getElapsedTimeInMilliSec();
@@ -685,7 +803,7 @@ void displayCB()
         t1.stop();
         updateTime = t1.getElapsedTimeInMilliSec();
         ///////////////////////////////////////////////////
-
+#endif
         // it is good idea to release PBOs with ID 0 after use.
         // Once bound with 0, all pixel operations behave normal ways.
         glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
@@ -780,7 +898,12 @@ void keyboardCB(unsigned char key, int x, int y)
 
     case ' ':
         if(pboSupported)
-            pboMode = ++pboMode % 3;
+        {
+            if (pboMode)
+                pboMode = 0;
+            else
+                pboMode = 2;
+        }
         cout << "PBO mode: " << pboMode << endl;
          break;
 
