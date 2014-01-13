@@ -62,13 +62,13 @@ void printTransferRate();
 
 
 // constants
-const int    SCREEN_WIDTH    = 400;
-const int    SCREEN_HEIGHT   = 300;
+const int    SCREEN_WIDTH    = 1600;
+const int    SCREEN_HEIGHT   = 1200;
 const float  CAMERA_DISTANCE = 3.0f;
 const int    TEXT_WIDTH      = 8;
 const int    TEXT_HEIGHT     = 13;
-const int    IMAGE_WIDTH = 1024;
-const int    IMAGE_HEIGHT = 1024;
+const int    IMAGE_WIDTH = 4096;
+const int    IMAGE_HEIGHT = 4096;
 const int    CHANNEL_COUNT = 4;
 const int    DATA_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT * CHANNEL_COUNT;
 const GLenum PIXEL_FORMAT = GL_BGRA;
@@ -223,7 +223,7 @@ int initGLUT(int argc, char **argv)
 
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_ALPHA); // display mode
 
-    glutInitWindowSize(400, 300);               // window size
+   glutInitWindowSize(SCREEN_WIDTH, SCREEN_HEIGHT);               // window size
 
     glutInitWindowPosition(100, 100);           // window location
 
